@@ -8,9 +8,7 @@ typedef struct {
   int inoutidx;
 } snd_pcm_cudaFIR_t;
 
-
-static int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
-static char *filter_FSstr[NBFILTER]={ "-44k", "-48k", "-88k", "-96k" , "-176k", "-192k", "-352k" , "-384k", "-705k" , "-768k" };
+static const int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
 
 static inline void *area_addr(const snd_pcm_channel_area_t *area, snd_pcm_uframes_t offset) {
 	unsigned int bitofs = area->first + area->step * offset;
@@ -159,16 +157,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaconvolve)
 	}
 
 
-        initConvolve(cvparam);
-
-        filterpath=malloc(strlen(filterpathprefix)+10);
-        for(int n=0;n<NBFILTER;n++) {
-                strcpy(filterpath,filterpathprefix);
-                strcat(filterpath,filter_FSstr[n]);
-                strcat(filterpath,".raw");
-                readFilter(filterpath,cvparam,n);
-        }
-	free(filterpath);
+        initConvolve(cvparam,filterpathprefix);
 
 	err = snd_pcm_extplug_create(&cu_snd->ext, name, root, sconf, stream, mode);
 	if (err < 0) {

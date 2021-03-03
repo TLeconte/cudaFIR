@@ -2,8 +2,7 @@
 #include <alsa/pcm_external.h>
 #include "cudaFIR.h"
 
-static int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
-static char *filter_FSstr[NBFILTER]={ "-44k", "-48k", "-88k", "-96k" , "-176k", "-192k", "-352k" , "-384k", "-705k" , "-768k" };
+static const int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
 
 static int inoutidx=0;
 static snd_pcm_sframes_t dsp_transfer(conv_param_t *cvparam,snd_pcm_format_t fm, void *src,int *dst,snd_pcm_uframes_t size)
@@ -47,7 +46,6 @@ int main(int argc,char **argv)
 	conv_param_t *cvparam;
 	snd_config_t *sconf = NULL;
 	int n;
-	char *filterpath;
 
 	int idx;
 	int inbuff[20000];
@@ -57,8 +55,8 @@ int main(int argc,char **argv)
 
 	FILE *infd,*outfd;
 
-        if(argc<4) {
-		fprintf(stderr,"%s filter infile outfile\n",argv[0]);
+        if(argc<5) {
+		fprintf(stderr,"%s filter filternb infile outfile\n",argv[0]);
 		return 1;
 	}	
 
@@ -66,26 +64,17 @@ int main(int argc,char **argv)
 	if (!cvparam)
 		return -ENOMEM;
 
-	cvparam->nf=2;
 	cvparam->partsz=4096;
 	cvparam->nbch=2;
-	size=262144;
 
-	cvparam->nbpart=(size+cvparam->partsz-1)/cvparam->partsz;
 
-	initConvolve(cvparam);
+	initConvolve(cvparam,argv[1]);
 
-	filterpath=malloc(strlen(argv[1])+10);
-	for(n=0;n<NBFILTER;n++) {
-		strcpy(filterpath,argv[1]);
-		strcat(filterpath,filter_FSstr[n]);
-		strcat(filterpath,".raw");
-		readFilter(filterpath,cvparam,n);
-	}
+	cvparam->nf=atoi(argv[2]);
 
-	infd=fopen(argv[2],"r");
+	infd=fopen(argv[3],"r");
 	if(infd==NULL) return -1;
-	outfd=fopen(argv[3],"w+");
+	outfd=fopen(argv[4],"w+");
 	if(outfd==NULL) return -1;
 
 	clock_gettime(CLOCK_THREAD_CPUTIME_ID,&start_time);
