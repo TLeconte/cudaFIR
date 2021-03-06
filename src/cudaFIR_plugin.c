@@ -32,27 +32,27 @@ cudaFIR_transfert(snd_pcm_extplug_t *ext,
         nb=cvparam->partsz-cu_snd->inoutidx;
         if(nb>size) nb=size;
 
-        if(cu_snd->inoutidx==0)
-             waitConvolve();
-
         // copy  out
         for (n=0;n < nb*cvparam->nbch; n++) {
-                dst[n]=(int)cvparam->inoutbuff[cu_snd->inoutidx*cvparam->nbch+n];
+                dst[n]=(int)cvparam->inoutbuff[cvparam->nbf][cu_snd->inoutidx*cvparam->nbch+n];
         }
+
         // copy in
         for (n=0;n < nb*cvparam->nbch; n++) {
                      switch(ext->format) {
                         case SND_PCM_FORMAT_S16 :
-                                cvparam->inoutbuff[cu_snd->inoutidx*cvparam->nbch+n]=(float)(((short*)src)[n]<<16);
+                                cvparam->inoutbuff[cvparam->nbf][cu_snd->inoutidx*cvparam->nbch+n]=(float)(((short*)src)[n]<<16);
                                 break;
                         case SND_PCM_FORMAT_S32 :
-                                cvparam->inoutbuff[cu_snd->inoutidx*cvparam->nbch+n]=(float)((int*)src)[n];
+                                cvparam->inoutbuff[cvparam->nbf][cu_snd->inoutidx*cvparam->nbch+n]=(float)((int*)src)[n];
                                 break;
                         }
         }
-
         cu_snd->inoutidx+=nb;
+
         if(cu_snd->inoutidx>=cvparam->partsz) {
+                waitConvolve();
+                cvparam->nbf^=1;
                 cudaConvolve(cvparam);
                 cu_snd->inoutidx=0;
         }
@@ -64,10 +64,13 @@ static int cudaFIR_init(snd_pcm_extplug_t *ext)
 {
 	int n;
 	snd_pcm_cudaFIR_t *cu_snd = ext->private_data;
+	conv_param_t *cvparam;
+
+	cvparam = &(cu_snd->cuparam);
 
         for(n=0;n<NBFILTER;n++) {
         	if(ext->rate==filter_FS[n]) {
-       			cu_snd->cuparam.nf=n;
+       			cvparam->nf=n;
 			break;
 		}
 	}
@@ -75,16 +78,19 @@ static int cudaFIR_init(snd_pcm_extplug_t *ext)
 		SNDERR("Invalid sampling rate %d",ext->rate);
 		return -1;
 	}
+	SNDERR("sampling rate %d",filter_FS[cvparam->nf]);
+
+        resetConvolve(cvparam);
 
 	return 0;
 }
 
-static const snd_pcm_extplug_callback_t cudaconvolve_callback = {
+static const snd_pcm_extplug_callback_t cudaFIR_callback = {
 	.transfer = cudaFIR_transfert,
 	.init = cudaFIR_init,
 };
 
-SND_PCM_PLUGIN_DEFINE_FUNC(cudaconvolve)
+SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
 {
 	snd_config_iterator_t i, next;
 	snd_pcm_cudaFIR_t *cu_snd;
@@ -102,8 +108,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaconvolve)
 		return -ENOMEM;
 
 	cu_snd->ext.version = SND_PCM_EXTPLUG_VERSION;
-	cu_snd->ext.name = "Cudaconvolve Plugin";
-	cu_snd->ext.callback = &cudaconvolve_callback;
+	cu_snd->ext.name = "CudaFIR Plugin";
+	cu_snd->ext.callback = &cudaFIR_callback;
 	cu_snd->ext.private_data = cu_snd;
 
 	cu_snd->cuparam.partsz=4096;
@@ -147,12 +153,12 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaconvolve)
 	}
 
 	if (!sconf) {
-		SNDERR("No slave configuration for cudaconvolve ");
+		SNDERR("No slave configuration for cudaFIR ");
 		return -EINVAL;
 	}
 
-	if (!filterpath) {
-		SNDERR("No filter path for cudaconvolve ");
+	if (!filterpathprefix) {
+		SNDERR("No filterpathprefix in conf for cudaFIR ");
 		return -EINVAL;
 	}
 
@@ -176,4 +182,4 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaconvolve)
 	return 0;
 }
 
-SND_PCM_PLUGIN_SYMBOL(cudaconvolve);
+SND_PCM_PLUGIN_SYMBOL(cudaFIR);

@@ -5,35 +5,34 @@
 static const int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
 
 static int inoutidx=0;
-static snd_pcm_sframes_t dsp_transfer(conv_param_t *cvparam,snd_pcm_format_t fm, void *src,int *dst,snd_pcm_uframes_t size)
+static snd_pcm_sframes_t cudaFIR_transfer(conv_param_t *cvparam,snd_pcm_format_t fm, void *src,int *dst,snd_pcm_uframes_t size)
 {
 	long int n,nb;
 
 	nb=cvparam->partsz-inoutidx;
 	if(nb>size) nb=size;
 
-	if(inoutidx==0) 
-		waitConvolve();
-
 	// copy  out
 	for (n=0;n < nb*cvparam->nbch; n++) {
-		dst[n]=(int)cvparam->inoutbuff[inoutidx*cvparam->nbch+n];
+		dst[n]=(int)cvparam->inoutbuff[cvparam->nbf][inoutidx*cvparam->nbch+n];
 	}
 
 	// copy in 
 	for (n=0;n < nb*cvparam->nbch; n++) {
 		     switch(fm) {
 			case SND_PCM_FORMAT_S16 :
-				cvparam->inoutbuff[inoutidx*cvparam->nbch+n]=(float)(((short*)src)[n]<<16);
+				cvparam->inoutbuff[cvparam->nbf][inoutidx*cvparam->nbch+n]=(float)(((short*)src)[n]<<16);
 				break;
 			case SND_PCM_FORMAT_S32 :
-				cvparam->inoutbuff[inoutidx*cvparam->nbch+n]=(float)((int*)src)[n];
+				cvparam->inoutbuff[cvparam->nbf][inoutidx*cvparam->nbch+n]=(float)((int*)src)[n];
 				break;
 			}
 	}
 	inoutidx+=nb;
 
 	if(inoutidx>=cvparam->partsz) {
+		waitConvolve();
+		cvparam->nbf^=1;
 		cudaConvolve(cvparam);
 		inoutidx=0;
 	}
@@ -66,11 +65,10 @@ int main(int argc,char **argv)
 
 	cvparam->partsz=4096;
 	cvparam->nbch=2;
-
-
 	initConvolve(cvparam,argv[1]);
 
 	cvparam->nf=atoi(argv[2]);
+	resetConvolve(cvparam);
 
 	infd=fopen(argv[3],"r");
 	if(infd==NULL) return -1;
@@ -85,7 +83,7 @@ int main(int argc,char **argv)
 		int rn,wn;
 		// just to simulate alsa call
 		rn=fread(&(inbuff[idx*cvparam->nbch]),cvparam->nbch*sizeof(int),1065-idx,infd);
-		wn=dsp_transfer(cvparam,SND_PCM_FORMAT_S32,inbuff,outbuff,1065);
+		wn=cudaFIR_transfer(cvparam,SND_PCM_FORMAT_S32,inbuff,outbuff,1065);
 		fwrite(outbuff,cvparam->nbch*sizeof(int),wn,outfd);
 		idx=1065-wn;
 		if(idx) memmove(inbuff,&(inbuff[wn*cvparam->nbch]),idx*cvparam->nbch*sizeof(int));
@@ -97,7 +95,7 @@ int main(int argc,char **argv)
 	fclose(infd);
 	fclose(outfd);
 
-	freeFilter();
+	freeConvolve();
 
 	return 0;
 }

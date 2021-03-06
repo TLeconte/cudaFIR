@@ -6,11 +6,13 @@ typedef struct {
   int partsz;
   int nf;
   int nbpart[NBFILTER];
-  float *inoutbuff;
+  int nbf;
+  float *inoutbuff[2];
 } conv_param_t;
 
 extern int initConvolve(conv_param_t *cvparam,char *filterpath);
-extern int cudaConvolve(conv_param_t *cvparam);
+extern void resetConvolve(conv_param_t *cvparam);
 extern void waitConvolve(void);
-extern void freeFilter(void);
+extern int cudaConvolve(conv_param_t *cvparam);
+extern void freeConvolve(void);
 
