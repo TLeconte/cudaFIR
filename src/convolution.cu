@@ -14,11 +14,10 @@ static __global__ void cufftComplexPointwiseMul(cufftComplex *, const cufftCompl
 static __global__ void AddOverlapScale(cufftReal *a, const cufftReal *b, float scale);
 static __global__ void ShiftAndPad(const cufftReal *a, cufftReal *b, int shift ,int len);
 
-static const char *filter_FSstr[NBFILTER]={ "-44k", "-48k", "-88k", "-96k" , "-176k", "-192k", "-352k" , "-384k", "-705k" , "-768k" };
-
+static  int cudaFIRintialised=0;
 static  cufftReal *d_signal;
 static  cufftComplex *d_signal_fft;
-static  cufftComplex *d_filter_fft[NBFILTER];
+static  cufftComplex *d_filter_fft;
 static  cufftComplex *d_tmp_fft;
 static  cufftReal *d_tmp_signal;
 static  cufftReal *d_convolved_signal[2];
@@ -27,50 +26,27 @@ static  cufftHandle fplan,bplan;
 #define NBTHREADS 256
 #define NBCHANN (cvparam->nbch)
 #define PART_SIZE (cvparam->partsz)
+#define FILTER_NPART (cvparam->nbpart)
 #define FFT_SIZE (2*PART_SIZE)
 #define FFT_CSIZE (((FFT_SIZE/2+512)/512)*512)
-#define FILTER_NPART (cvparam->nbpart[cvparam->nf])
 
-static int addFilter(conv_param_t *cvparam, float *h_filter, int nf) { 
-
-  cudaMalloc((void **)(&(d_filter_fft[nf])), sizeof(cufftComplex)*FFT_CSIZE*NBCHANN*cvparam->nbpart[nf]);
-
-  // compute fft filter parts
-  for(int n=0; n < cvparam->nbpart[nf] ; n++ ) {
-  	// Copy host memory to device
-  	cudaMemcpy(d_signal, &(h_filter[n*NBCHANN*PART_SIZE]), sizeof(float)*PART_SIZE*NBCHANN, cudaMemcpyHostToDevice);
-  	if (cudaGetLastError() != cudaSuccess){
-		fprintf(stderr, "cudaFIR: Memcpy filter\n");
-		return -1;
-  	}
-
-  	cufftExecR2C(fplan, d_signal, &(d_filter_fft[nf][n*NBCHANN*FFT_CSIZE]));
-  	if (cudaGetLastError() != cudaSuccess){
-		fprintf(stderr, "cudaFIR: ExecR2C %d\n",n);
-		return -1;
-  	}
-  }
-
-  return 0;
-}
-
-static int readFilter(char *filterpath,conv_param_t *cvparam,int nf)
+int readFilter(char *filterpath,conv_param_t *cvparam)
 {
         FILE *fd;
         int size;
         float *filter;
+  	cudaError_t cerr;
 
         fd=fopen(filterpath,"r");
         if(fd==NULL) return -1;
 
-
 	fseek(fd, 0, SEEK_END);
 	size=ftell(fd)/sizeof(float);
 	rewind(fd);
-	cvparam->nbpart[nf] = (size/cvparam->nbch+cvparam->partsz-1)/cvparam->partsz;
-       	fprintf(stderr,"filter %s sz:%d npart:%d nf:%d\n",filterpath,size,cvparam->nbpart[nf],nf);
+	cvparam->nbpart = (size/cvparam->nbch+cvparam->partsz-1)/cvparam->partsz;
+       	fprintf(stderr,"cudaFIR using filter %s sz:%d npart:%d\n",filterpath,size,cvparam->nbpart);
 
-        size=cvparam->nbch*cvparam->partsz*cvparam->nbpart[nf];
+        size=cvparam->nbch*cvparam->partsz*cvparam->nbpart;
 
         filter=(float*)calloc(size,sizeof(float));
         if(filter==NULL) {
@@ -86,34 +62,73 @@ static int readFilter(char *filterpath,conv_param_t *cvparam,int nf)
         }
         fclose(fd);
 
-        if(addFilter(cvparam,filter,nf)) {
-                free(filter);
-                return -1;
-        }
+  cudaStreamSynchronize(0);
 
-        free(filter);
-        return 0;
+  cudaMalloc((void **)(&(d_filter_fft)), sizeof(cufftComplex)*FFT_CSIZE*NBCHANN*cvparam->nbpart);
+  // compute fft filter parts
+  for(int n=0; n < cvparam->nbpart ; n++ ) {
+  	// Copy host memory to device
+  	cudaMemcpy(d_signal, &(filter[n*NBCHANN*PART_SIZE]), sizeof(float)*PART_SIZE*NBCHANN, cudaMemcpyHostToDevice);
+  	if (cudaGetLastError() != cudaSuccess){
+		fprintf(stderr, "cudaFIR: Memcpy filter\n");
+		return -1;
+  	}
+
+  	cufftExecR2C(fplan, d_signal, &(d_filter_fft[n*NBCHANN*FFT_CSIZE]));
+  	if (cudaGetLastError() != cudaSuccess){
+		fprintf(stderr, "cudaFIR: ExecR2C %d\n",n);
+		return -1;
+  	}
+  }
+  free(filter);
+
+  cudaMalloc((void **)(&(d_convolved_signal[0])), sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
+  cudaMalloc((void **)(&(d_convolved_signal[1])), sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
+  cudaMemset(d_convolved_signal[0], 0, sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
+  cudaMemset(d_convolved_signal[1], 0, sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
+
+  cudaHostAlloc(&(cvparam->inoutbuff[0]),sizeof(float)*FFT_SIZE*NBCHANN,0);
+  if ((cerr=cudaGetLastError()) != cudaSuccess){
+	fprintf(stderr, "cudaFIR  : cudaAlllocHost error %s %s\n",cudaGetErrorName(cerr),cudaGetErrorString(cerr));
+	return -1;
+  }
+  cudaHostAlloc(&(cvparam->inoutbuff[1]),sizeof(float)*FFT_SIZE*NBCHANN,0);
+  if ((cerr=cudaGetLastError()) != cudaSuccess){
+	fprintf(stderr, "cudaFIR  : cudaAlllocHost error %s %s\n",cudaGetErrorName(cerr),cudaGetErrorString(cerr));
+	return -1;
+  }
+  memset(cvparam->inoutbuff[0],0,sizeof(float)*FFT_SIZE*NBCHANN);
+  memset(cvparam->inoutbuff[1],0,sizeof(float)*FFT_SIZE*NBCHANN);
+
+  cvparam->nbf=0;
+
+  return 0;
+}
+
+void freeFilter(conv_param_t *cvparam) { 
+
+  cudaStreamSynchronize(0);
+
+  if(d_filter_fft) cudaFree(d_filter_fft);
+  if(d_convolved_signal[0]) cudaFree(d_convolved_signal[0]);
+  if(d_convolved_signal[1]) cudaFree(d_convolved_signal[1]);
+  if(cvparam->inoutbuff[0]) cudaFreeHost(cvparam->inoutbuff[0]);
+  if(cvparam->inoutbuff[1]) cudaFreeHost(cvparam->inoutbuff[1]);
+
+  d_filter_fft=NULL;
+  d_convolved_signal[0]=NULL;
+  d_convolved_signal[1]=NULL;
+  cvparam->inoutbuff[0]=NULL;
+  cvparam->inoutbuff[1]=NULL;
 }
 
 
-int initConvolve(conv_param_t *cvparam,char *filterpathprefix) { 
-  int n;
-  char *filterpath;
+int initConvolve(conv_param_t *cvparam) { 
+
+  if(cudaFIRintialised) return 0;
 
   if(cvparam->partsz%NBTHREADS) {
 	fprintf(stderr, "cudaFIR : partsz must be a multiple of %d\n",NBTHREADS);
-	return -1;
-  }
-
-  cudaHostAlloc(&(cvparam->inoutbuff[0]),sizeof(float)*FFT_SIZE*NBCHANN,0);
-  if (cudaGetLastError() != cudaSuccess){
-	fprintf(stderr, "cudaFIR  : cudaAlllocHost error\n");
-	return -1;
-  }
-
-  cudaHostAlloc(&(cvparam->inoutbuff[1]),sizeof(float)*FFT_SIZE*NBCHANN,0);
-  if (cudaGetLastError() != cudaSuccess){
-	fprintf(stderr, "cudaFIR  : cudaAlllocHost error\n");
 	return -1;
   }
 
@@ -146,41 +161,14 @@ int initConvolve(conv_param_t *cvparam,char *filterpathprefix) {
 	return -1;
   }
 
-  filterpath=(char*)malloc(strlen(filterpathprefix)+16);
-  for(n=0;n<NBFILTER;n++) {
-      d_filter_fft[n]=NULL;
-      cvparam->nbpart[n]=0;
-
-      strcpy(filterpath,filterpathprefix);
-      strcat(filterpath,filter_FSstr[n]);
-      strcat(filterpath,".raw");
-      readFilter(filterpath,cvparam,n);
-  }
-  free(filterpath);
-
   d_convolved_signal[0]=NULL;
   d_convolved_signal[1]=NULL;
+  d_filter_fft=NULL;
+  cvparam->inoutbuff[0]=NULL;
+  cvparam->inoutbuff[1]=NULL;
 
+  cudaFIRintialised=1;
   return 0;
-}
-
-void resetConvolve(conv_param_t *cvparam)
-{
-  cudaStreamSynchronize(0);
-
-  if(d_convolved_signal[0]) cudaFree(d_convolved_signal[0]);
-  if(d_convolved_signal[1]) cudaFree(d_convolved_signal[1]);
-
-  cudaMalloc((void **)(&(d_convolved_signal[0])), sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
-  cudaMalloc((void **)(&(d_convolved_signal[1])), sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
-
-  cudaMemset(d_convolved_signal[0], 0, sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
-  cudaMemset(d_convolved_signal[1], 0, sizeof(cufftReal)*NBCHANN*(FILTER_NPART+1)*PART_SIZE);
-
-  memset(cvparam->inoutbuff[0],0,sizeof(float)*FFT_SIZE*NBCHANN);
-  memset(cvparam->inoutbuff[1],0,sizeof(float)*FFT_SIZE*NBCHANN);
-
-  cvparam->nbf=0;
 }
 
 void waitConvolve(void)
@@ -207,7 +195,7 @@ int cudaConvolve(conv_param_t *cvparam) {
 
   for(int n=0; n < FILTER_NPART ; n++ ) {
 	/*  signal fft * filter part fft */
-  	cufftComplexPointwiseMul<<<(FFT_CSIZE*NBCHANN/NBTHREADS),NBTHREADS>>>(d_tmp_fft, d_signal_fft, &(d_filter_fft[cvparam->nf][n*FFT_CSIZE*NBCHANN]));
+  	cufftComplexPointwiseMul<<<(FFT_CSIZE*NBCHANN/NBTHREADS),NBTHREADS>>>(d_tmp_fft, d_signal_fft, &(d_filter_fft[n*FFT_CSIZE*NBCHANN]));
   	if (cudaGetLastError() != cudaSuccess){
 		fprintf(stderr, "cudaFIR: Mul\n");
 		return -1;
@@ -245,26 +233,6 @@ int cudaConvolve(conv_param_t *cvparam) {
     }
 
   return 0;
-}
-
-void freeConvolve(void)
-{
-  int n;
-
-  // Destroy CUFFT context
-  cufftDestroy(fplan);
-  cufftDestroy(bplan);
-
-  cudaFree(d_signal);
-  cudaFree(d_signal_fft);
-  for(n=0;n<NBFILTER;n++)
-  	if(d_filter_fft[n])
-  		cudaFree(d_filter_fft[n]);
-  cudaFree(d_tmp_fft);
-  cudaFree(d_tmp_signal);
-
-  if(d_convolved_signal[0]) cudaFree(d_convolved_signal[0]);
-  if(d_convolved_signal[1]) cudaFree(d_convolved_signal[1]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

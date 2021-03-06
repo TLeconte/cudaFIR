@@ -9,6 +9,7 @@ typedef struct {
 } snd_pcm_cudaFIR_t;
 
 static const int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
+static const char *filter_FSstr[NBFILTER]={ "-44k", "-48k", "-88k", "-96k" , "-176k", "-192k", "-352k" , "-384k", "-705k" , "-768k" };
 
 static inline void *area_addr(const snd_pcm_channel_area_t *area, snd_pcm_uframes_t offset) {
 	unsigned int bitofs = area->first + area->step * offset;
@@ -62,25 +63,43 @@ cudaFIR_transfert(snd_pcm_extplug_t *ext,
 
 static int cudaFIR_init(snd_pcm_extplug_t *ext)
 {
-	int n;
 	snd_pcm_cudaFIR_t *cu_snd = ext->private_data;
 	conv_param_t *cvparam;
+	char *filterpath;
+	int n,res;
 
 	cvparam = &(cu_snd->cuparam);
 
         for(n=0;n<NBFILTER;n++) {
         	if(ext->rate==filter_FS[n]) {
-       			cvparam->nf=n;
 			break;
 		}
 	}
 	if(n==NBFILTER) {
-		SNDERR("Invalid sampling rate %d",ext->rate);
+		fprintf(stderr,"Invalid sampling rate %d\n",ext->rate);
 		return -1;
 	}
-	SNDERR("sampling rate %d",filter_FS[cvparam->nf]);
 
-        resetConvolve(cvparam);
+        filterpath=(char*)malloc(strlen(cvparam->filterpathprefix)+16);
+	strcpy(filterpath,cvparam->filterpathprefix);
+        strcat(filterpath,filter_FSstr[n]);
+        strcat(filterpath,".raw");
+
+        res = readFilter(filterpath,cvparam);
+	free(filterpath);
+
+	return res;
+}
+
+
+static int cudaFIR_close(snd_pcm_extplug_t *ext)
+{
+	snd_pcm_cudaFIR_t *cu_snd = ext->private_data;
+	conv_param_t *cvparam;
+	cvparam = &(cu_snd->cuparam);
+
+	free(cvparam->filterpathprefix);
+	freeFilter(cvparam);
 
 	return 0;
 }
@@ -88,6 +107,7 @@ static int cudaFIR_init(snd_pcm_extplug_t *ext)
 static const snd_pcm_extplug_callback_t cudaFIR_callback = {
 	.transfer = cudaFIR_transfert,
 	.init = cudaFIR_init,
+	.close = cudaFIR_close,
 };
 
 SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
@@ -99,8 +119,6 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
 	int err;
         const int format_list[] =  { SND_PCM_FORMAT_S16 , SND_PCM_FORMAT_S32 };
 
-    	int size,result;
-	char *filterpath;
 	char *filterpathprefix;
 
 	cu_snd = calloc(1, sizeof(snd_pcm_cudaFIR_t));
@@ -132,20 +150,20 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
 		if (strcmp(id, "filterpathprefix") == 0) {
 			if(snd_config_get_string(n,(const char **)&filterpathprefix)==0) 
 				continue;
-			SNDERR("Invalid cudaFIR filterpathprefix");
+			fprintf(stderr,"Invalid cudaFIR filterpathprefix");
 		}
 		if (strcmp(id, "channels") == 0) {
 			if(snd_config_get_integer(n,(long*)&(cu_snd->cuparam.nbch))==0) 
 				continue;
-			SNDERR("Invalid cudaFIR channels");
+			fprintf(stderr,"Invalid cudaFIR channels");
 		}
 		if (strcmp(id, "partsz") == 0) {
 			if(snd_config_get_integer(n,(long*)&(cu_snd->cuparam.partsz))==0) 
 				continue;
-			SNDERR("Invalid cudaFIR partsz");
+			fprintf(stderr,"Invalid cudaFIR partsz");
 		}
 
-		SNDERR("Unknown field %s", id);
+		fprintf(stderr,"Unknown field %s", id);
 		err = -EINVAL;
 	ok:
 		if (err < 0)
@@ -153,17 +171,17 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
 	}
 
 	if (!sconf) {
-		SNDERR("No slave configuration for cudaFIR ");
+		fprintf(stderr,"No slave configuration for cudaFIR ");
 		return -EINVAL;
 	}
 
 	if (!filterpathprefix) {
-		SNDERR("No filterpathprefix in conf for cudaFIR ");
+		fprintf(stderr,"No filterpathprefix in conf for cudaFIR ");
 		return -EINVAL;
 	}
+	cu_snd->cuparam.filterpathprefix=strdup(filterpathprefix);
 
-
-        initConvolve(cvparam,filterpathprefix);
+        initConvolve(cvparam);
 
 	err = snd_pcm_extplug_create(&cu_snd->ext, name, root, sconf, stream, mode);
 	if (err < 0) {
@@ -171,7 +189,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(cudaFIR)
 		return err;
 	}
 
-   // set in/out formats
+        // set in/out formats
 	snd_pcm_extplug_set_param(&cu_snd->ext, SND_PCM_EXTPLUG_HW_CHANNELS, cu_snd->cuparam.nbch);
         snd_pcm_extplug_set_param_list(&cu_snd->ext, SND_PCM_EXTPLUG_HW_FORMAT,2,format_list);
 

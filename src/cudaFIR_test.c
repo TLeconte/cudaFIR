@@ -3,6 +3,8 @@
 #include "cudaFIR.h"
 
 static const int filter_FS[NBFILTER]={ 44100, 48000, 88200, 96000 , 176400, 192000, 352800 ,384000, 705800 , 768000 };
+static const char *filter_FSstr[NBFILTER]={ "-44k", "-48k", "-88k", "-96k" , "-176k", "-192k", "-352k" , "-384k", "-705k" , "-768k" };
+
 
 static int inoutidx=0;
 static snd_pcm_sframes_t cudaFIR_transfer(conv_param_t *cvparam,snd_pcm_format_t fm, void *src,int *dst,snd_pcm_uframes_t size)
@@ -40,6 +42,34 @@ static snd_pcm_sframes_t cudaFIR_transfer(conv_param_t *cvparam,snd_pcm_format_t
 	return nb;
 }
 
+int cudaFIR_init(conv_param_t *cvparam,int fs)
+{
+        char *filterpath;
+        int n;
+
+        fprintf(stderr,"cudaFIR : sampling rate %d\n",fs);
+
+        for(n=0;n<NBFILTER;n++) {
+                if(fs==filter_FS[n]) {
+                        break;
+                }
+        }
+        if(n==NBFILTER) {
+                fprintf(stderr,"Invalid sampling rate %d\n",fs);
+                return -1;
+        }
+
+        filterpath=(char*)malloc(strlen(cvparam->filterpathprefix)+16);
+        strcpy(filterpath,cvparam->filterpathprefix);
+        strcat(filterpath,filter_FSstr[n]);
+        strcat(filterpath,".raw");
+
+        readFilter(filterpath,cvparam);
+        free(filterpath);
+
+        return 0;
+}
+
 int main(int argc,char **argv)
 {
 	conv_param_t *cvparam;
@@ -65,10 +95,11 @@ int main(int argc,char **argv)
 
 	cvparam->partsz=4096;
 	cvparam->nbch=2;
-	initConvolve(cvparam,argv[1]);
+	cvparam->filterpathprefix=strdup(argv[1]);
 
-	cvparam->nf=atoi(argv[2]);
-	resetConvolve(cvparam);
+        initConvolve(cvparam);
+        initConvolve(cvparam);
+	cudaFIR_init(cvparam,atoi(argv[2]));
 
 	infd=fopen(argv[3],"r");
 	if(infd==NULL) return -1;
@@ -94,8 +125,6 @@ int main(int argc,char **argv)
 	fprintf(stderr,"computation time %ld\n",(stop_time.tv_sec-start_time.tv_sec)*1000L+(stop_time.tv_nsec-start_time.tv_nsec)/1000000L);
 	fclose(infd);
 	fclose(outfd);
-
-	freeConvolve();
 
 	return 0;
 }
