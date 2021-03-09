@@ -41,10 +41,10 @@ int readFilter(char *filterpath,conv_param_t *cvparam)
         if(fd==NULL) return -1;
 
 	fseek(fd, 0, SEEK_END);
-	size=ftell(fd)/sizeof(float);
+	size=ftell(fd)/sizeof(float)/cvparam->nbch;
 	rewind(fd);
-	cvparam->nbpart = (size/cvparam->nbch+cvparam->partsz-1)/cvparam->partsz;
-       	fprintf(stderr,"cudaFIR using filter %s sz:%d npart:%d\n",filterpath,size,cvparam->nbpart);
+	cvparam->nbpart = (size+cvparam->partsz-1)/cvparam->partsz;
+       	fprintf(stderr,"cudaFIR using filter %s sz:%d nb part:%d\n",filterpath,size,cvparam->nbpart);
 
         size=cvparam->nbch*cvparam->partsz*cvparam->nbpart;
 
@@ -54,7 +54,7 @@ int readFilter(char *filterpath,conv_param_t *cvparam)
                 return -1;
         }
 
-        if(fread(filter,sizeof(float),size,fd)!=size) {
+        if(fread(filter,sizeof(float),size,fd)==0) {
        		fprintf(stderr,"cudaFIR read filter error \n");
                 free(filter);
                 fclose(fd);
